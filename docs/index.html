@@ -72,6 +72,8 @@ body:not([data-view="landing"]) .top .search{opacity:1;pointer-events:auto;trans
 .search form{display:flex;align-items:center;gap:8px;background:rgba(255,255,255,.045);border:1px solid var(--line-2);border-radius:999px;
   padding:5px 5px 5px 18px;transition:border-color .25s,background .25s,box-shadow .25s}
 .search form:focus-within{border-color:rgba(var(--v-rgb),.65);background:rgba(255,255,255,.07);box-shadow:0 0 0 5px rgba(var(--v-rgb),.10)}
+.search form.nudge{border-color:var(--warn);animation:nudge .42s var(--ease)}
+@keyframes nudge{20%,60%{transform:translateX(-7px)}40%,80%{transform:translateX(7px)}}
 .search svg.mag{width:17px;height:17px;flex:none;color:var(--ink-3)}
 .search input{flex:1;min-width:0;width:100%;background:none;border:0;outline:0;padding:9px 4px;font-size:15px}
 .search input::placeholder{color:var(--ink-3)}
@@ -346,7 +348,7 @@ footer{max-width:1240px;margin:0 auto;padding:0 clamp(16px,4vw,44px) 46px;font-s
   </button>
   <div class="search" id="s-top">
     <form autocomplete="off"><svg class="mag" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.600-3.600"/></svg>
-      <input type="text" aria-label="Ticker or company" placeholder="Another ticker…" spellcheck="false">
+      <input type="text" aria-label="Ticker or company" placeholder="Another ticker…" spellcheck="false" autocapitalize="off" autocorrect="off" enterkeyhint="search">
       <button class="go" type="submit">Analyse</button></form>
     <div class="suggest" hidden></div>
   </div>
@@ -360,7 +362,7 @@ footer{max-width:1240px;margin:0 auto;padding:0 clamp(16px,4vw,44px) 46px;font-s
     <p class="lede rise">Type a ticker. Lodestar reads five years of sales, margins, EPS and return on equity, lays them against what analysts expect next and what the market is charging — and commits to a call.</p>
     <div class="search big rise" id="s-main">
       <form autocomplete="off"><svg class="mag" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.600-3.600"/></svg>
-        <input type="text" aria-label="Ticker or company" placeholder="RELIANCE, TCS, AAPL — or a company name" spellcheck="false" autofocus>
+        <input type="text" aria-label="Ticker or company" placeholder="RELIANCE, TCS, AAPL — or a company name" spellcheck="false" autocapitalize="off" autocorrect="off" enterkeyhint="search" autofocus>
         <button class="go" type="submit">Analyse <span aria-hidden="true">→</span></button></form>
       <div class="suggest" hidden></div>
     </div>
@@ -773,7 +775,7 @@ function render(j){
 
 /* ═════════════ app shell ═════════════ */
 const EXAMPLES=["RELIANCE","HDFCBANK","TITAN","INFY","ITC","NVDA","AAPL"];
-let reqId=0,ldTimer;
+let reqId=0,ldTimer,shown=null;   // shown = symbol of the report on screen
 
 /* ═════════════ data source ═════════════
    Local (app.py): live Yahoo pull per request.
@@ -781,11 +783,19 @@ let reqId=0,ldTimer;
 const STATIC=!!window.LODESTAR_STATIC;
 let IDX=null;
 async function snapIndex(){if(!IDX){const r=await fetch("data/index.json",{cache:"no-cache"});if(!r.ok)throw new Error("The snapshot index didn't load.");IDX=await r.json()}return IDX}
-const bare=s=>s.toUpperCase().replace(/^(NSE|BSE|NASDAQ|NYSE):/,"").trim();
+/* What people actually paste: "TCS.NS", "infy.ns", " $AAPL ", "NSE:M_M", "reliance.bo", "BRK.B".
+   clean() tidies the string; bare() reduces it to the symbol/name to match on, dropping the exchange. */
+const clean=s=>String(s??"").replace(/\s+/g," ").replace(/^[\s"'“”‘’`$]+|[\s"'“”‘’`,;]+$/g,"");
+function bare(s){
+  let u=clean(s).toUpperCase();
+  const m=u.match(/^(NSE|BSE|NASDAQ|NYSE)\s*:\s*(.*)$/);
+  if(m)u=m[1]==="NSE"?m[2].replace(/_/g,"&"):m[2];
+  return u.replace(/\.(NS|NSE|BO|BSE)$/,"").trim();
+}
 function snapMatch(items,q,limit=7){
-  const Q=bare(q),ql=q.trim().toLowerCase();if(!ql)return[];
-  const rank=it=>{const s=it.symbol.toUpperCase(),b=s.replace(/\.(NS|BO)$/,""),n=(it.name||"").toLowerCase();
-    if(s===Q||b===Q)return 0;if(b.startsWith(Q))return 1;if(n.startsWith(ql))return 2;if(n.split(/[\s.&-]+/).some(w=>w.startsWith(ql)))return 3;if(n.includes(ql)||b.includes(Q))return 4;return 9};
+  const Q=bare(q),Qd=Q.replace(/\./g,"-"),ql=Q.toLowerCase();if(!Q)return[];
+  const rank=it=>{const s=it.symbol.toUpperCase(),b=s.replace(/\.(NS|BO)$/,""),n=(it.name||"").toLowerCase(),aka=it.aka||[];
+    if(s===Q||b===Q||b===Qd||aka.includes(Q))return 0;if(b.startsWith(Q)||aka.some(a=>a.startsWith(Q)))return 1;if(n.startsWith(ql))return 2;if(n.split(/[\s.&-]+/).some(w=>w.startsWith(ql)))return 3;if(n.includes(ql)||b.includes(Q))return 4;return 9};
   return items.map(it=>[rank(it),it]).filter(x=>x[0]<9).sort((a,b)=>a[0]-b[0]||a[1].symbol.localeCompare(b[1].symbol)).slice(0,limit).map(x=>({...x[1],rank:x[0]}));
 }
 async function apiSearch(q){
@@ -794,10 +804,12 @@ async function apiSearch(q){
 }
 async function apiAnalyze(t){
   if(!STATIC){const r=await fetch("/api/analyze?ticker="+encodeURIComponent(t)),j=await r.json();if(!r.ok||j.error)throw new Error(j.error||"Something went wrong.");return j}
-  const ix=await snapIndex(),[hit]=snapMatch(ix.items,t,1);
-  // exact symbol always; otherwise only a prefix match on symbol / name / name-word, and only for 3+ characters
-  if(!hit||(hit.rank>0&&(hit.rank>3||t.trim().length<3)))
-    throw new Error(`${t.toUpperCase()} isn't in this hosted snapshot. It covers ${ix.items.length} companies (the NIFTY 200 plus large US names). Run Lodestar locally to analyse any ticker.`);
+  const ix=await snapIndex(),near=snapMatch(ix.items,t,4),hit=near[0];
+  // exact symbol (or a known old name) always; otherwise only a prefix match on symbol / name / name-word, and only for 3+ characters
+  if(!hit||(hit.rank>0&&(hit.rank>3||bare(t).length<3))){
+    const e=new Error(`“${t}” isn't in this hosted snapshot. It covers ${ix.items.length} companies (the NIFTY 200 plus large US names). Run Lodestar locally to analyse any ticker.`);
+    e.suggest=near.map(x=>x.symbol);throw e;
+  }
   const r=await fetch("data/"+hit.file,{cache:"no-cache"});if(!r.ok)throw new Error("That company's snapshot file didn't load. Try again in a moment.");
   return await r.json();
 }
@@ -813,9 +825,18 @@ function show(v){document.body.dataset.view=v;["landing","loading","error","repo
 function chipRow(host,label,items){host.innerHTML=`<span>${label}</span>`+items.map(t=>`<button class="chip" data-t="${esc(t)}">${esc(t.replace(/\.NS$/,""))}</button>`).join("");$$(".chip",host).forEach(b=>b.addEventListener("click",()=>run(b.dataset.t)))}
 function recent(){try{return JSON.parse(localStorage.getItem("lodestar.recent")||"[]")}catch(e){return[]}}
 function landingChips(){const r=recent();chipRow($("#chips"),r.length?"Recent":"Try",r.length?[...new Set([...r,...EXAMPLES])].slice(0,7):EXAMPLES)}
+function nudge(){
+  const root=$(document.body.dataset.view==="landing"?"#s-main":"#s-top"),f=$("form",root);
+  f.classList.remove("nudge");void f.offsetWidth;f.classList.add("nudge");setTimeout(()=>f.classList.remove("nudge"),900);$("input",root).focus();
+}
+function toHash(){
+  if(location.hash.length<2)return;let el=null;
+  try{el=document.getElementById(decodeURIComponent(location.hash.slice(1)))}catch(e){}
+  if(el)el.scrollIntoView();   // layout is already final here; no rAF, which never fires in a background tab
+}
 async function run(t,push=true){
-  t=(t||"").trim();if(!t)return;
-  const id=++reqId;
+  t=clean(t);if(!t){nudge();return}
+  const id=++reqId;shown=null;
   $$(".search input").forEach(i=>{i.value="";i.blur()});$$(".suggest").forEach(s=>s.hidden=true);
   show("loading");scrollTo({top:0});
   $("#ld-t").textContent="Reading "+t.toUpperCase().replace(/\.NS$|\.BO$/,"");
@@ -826,29 +847,38 @@ async function run(t,push=true){
     if(id!==reqId)return;
     show("report");render(j);
     document.title=`${j.meta.short} — ${j.verdict.action} · Lodestar`;
-    if(push)history.pushState({t:j.meta.symbol},"","?t="+encodeURIComponent(j.meta.symbol));
+    const url="?t="+encodeURIComponent(j.meta.symbol);
+    if(push)history.pushState({t:j.meta.symbol},"",url);
+    else{history.replaceState({t:j.meta.symbol},"",url+location.hash);toHash()}   // ?t=tcs#p-sales -> ?t=TCS.NS#p-sales, then jump
+    shown=j.meta.symbol;
     try{localStorage.setItem("lodestar.recent",JSON.stringify([j.meta.symbol,...recent().filter(x=>x!==j.meta.symbol)].slice(0,5)))}catch(e){}
   }catch(e){
     if(id!==reqId)return;
     show("error");$("#err-msg").textContent=e.message&&!/Failed to fetch|NetworkError/.test(e.message)?e.message:(STATIC?"Couldn't load the data just now. Check your connection and try again.":"The Lodestar server isn't responding. Check that app.py is still running.");
-    chipRow($("#err-chips"),"Try",EXAMPLES);
+    if(e.suggest&&e.suggest.length)chipRow($("#err-chips"),"Did you mean",e.suggest);else chipRow($("#err-chips"),"Try",EXAMPLES);
   }finally{if(id===reqId)clearInterval(ldTimer)}
 }
 function wireSearch(root){
-  const form=$("form",root),input=$("input",root),box=$(".suggest",root);let items=[],on=-1,t,seq=0;
+  const form=$("form",root),input=$("input",root),box=$(".suggest",root);let items=[],on=-1,t,seq=0,viaKey=false;
+  const submit=()=>{seq++;clearTimeout(t);run(on>=0&&items[on]?items[on].symbol:input.value)};
   const close=()=>{box.hidden=true;on=-1};
   const paint=()=>{box.innerHTML=items.map((r,i)=>`<button type="button" class="${i===on?"on":""}" data-i="${i}"><span class="sy">${esc(r.symbol)}</span><span class="nm">${esc(r.name)}</span><span class="ex">${esc(r.exchange)}</span></button>`).join("");box.hidden=!items.length;
     $$("button",box).forEach(b=>b.addEventListener("mousedown",e=>{e.preventDefault();run(items[+b.dataset.i].symbol)}))};
   input.addEventListener("input",()=>{clearTimeout(t);const q=input.value.trim();if(q.length<2){items=[];close();return}
     t=setTimeout(async()=>{const s=++seq;try{const res=await apiSearch(q);if(s!==seq||input.value.trim()!==q)return;items=res;on=-1;paint()}catch(e){}},190)});
-  input.addEventListener("keydown",e=>{if(box.hidden)return;if(e.key==="ArrowDown"||e.key==="ArrowUp"){e.preventDefault();on=(on+(e.key==="ArrowDown"?1:-1)+items.length)%items.length;paint()}else if(e.key==="Escape")close()});
+  input.addEventListener("keydown",e=>{
+    if(e.key==="Enter"||e.keyCode===13){if(e.isComposing||e.keyCode===229)return;e.preventDefault();viaKey=true;setTimeout(()=>viaKey=false,0);submit();return}
+    if(box.hidden)return;if(e.key==="ArrowDown"||e.key==="ArrowUp"){e.preventDefault();on=(on+(e.key==="ArrowDown"?1:-1)+items.length)%items.length;paint()}else if(e.key==="Escape")close()});
   input.addEventListener("blur",()=>setTimeout(close,120));
-  form.addEventListener("submit",e=>{e.preventDefault();seq++;clearTimeout(t);run(on>=0&&items[on]?items[on].symbol:input.value)});
+  form.addEventListener("submit",e=>{e.preventDefault();if(!viaKey)submit()});   // viaKey: this Enter was already handled on keydown
 }
 wireSearch($("#s-main"));wireSearch($("#s-top"));
-$("#home").addEventListener("click",()=>{reqId++;show("landing");landingChips();history.pushState({},"",location.pathname);document.title="Lodestar — fundamental verdicts";$("#s-main input").focus()});
+$("#home").addEventListener("click",()=>{reqId++;shown=null;show("landing");landingChips();history.pushState({},"",location.pathname);document.title="Lodestar — fundamental verdicts";$("#s-main input").focus()});
 addEventListener("scroll",()=>$("#top").classList.toggle("stuck",scrollY>8),{passive:true});
-addEventListener("popstate",()=>{const t=new URLSearchParams(location.search).get("t");if(t)run(t,false);else{reqId++;show("landing");landingChips()}});
+addEventListener("popstate",()=>{const t=new URLSearchParams(location.search).get("t");
+  // Clicking a pillar link (#p-sales) fires popstate as well. Same report already on screen: leave it alone and let the browser scroll.
+  if(t&&t===shown&&document.body.dataset.view==="report")return;
+  if(t)run(t,false);else{reqId++;shown=null;show("landing");landingChips()}});
 landingChips();initStatic();
 {const t=new URLSearchParams(location.search).get("t");if(t)run(t,false)}
 </script>

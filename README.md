@@ -10,7 +10,9 @@ python engine.py RELIANCE TCS AAPL     # scores in the terminal, no browser
 ```
 
 Bare symbols resolve NSE first (`RELIANCE` -> `RELIANCE.NS`), then as typed (`AAPL`), then BSE.
-`TCS.NS`, `NSE:TCS`, `500325.BO` and company names ("tata motors") also work.
+`TCS.NS`, `infy.ns`, `NSE:TCS`, `500325.BO` and company names ("tata motors") also work. Old symbols
+and everyday names Yahoo's search no longer knows (`Zomato` -> `ETERNAL.NS`, `HDFC`, `SBI`, `HUL`)
+are mapped in `ALIASES` in `engine.py`; the hosted search index carries them too.
 
 ## What it reads
 
@@ -49,6 +51,7 @@ run the app locally.
 ```
 python build_static.py                 # rebuild docs/ locally
 python build_static.py RELIANCE AAPL   # refresh just these
+python build_static.py --render-only   # no Yahoo calls: push a front-end or alias change into docs/
 ```
 
 ## Files

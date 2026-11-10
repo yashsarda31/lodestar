@@ -13,6 +13,7 @@ company because of one bad run. Runs daily via .github/workflows/pages.yml.
 
     python build_static.py               # full universe
     python build_static.py RELIANCE AAPL # just these (others' files kept)
+    python build_static.py --render-only # no Yahoo calls: re-copy index.html and rewrite the search index
 """
 from __future__ import annotations
 
@@ -31,6 +32,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DOCS = os.path.join(HERE, "docs")
 DATA = os.path.join(DOCS, "data")
 WORKERS = 2
+
+# old symbols / everyday names -> the index entry they should find ("ZOMATO" -> ETERNAL.NS)
+AKA: dict[str, list[str]] = {}
+for _old, _new in engine.ALIASES.items():
+    AKA.setdefault(_new, []).append(_old)
 
 
 def fname(sym: str) -> str:
@@ -72,14 +78,17 @@ def main(argv: list[str]) -> int:
     except Exception:
         pass
     os.makedirs(DATA, exist_ok=True)
-    syms = argv or universe()
+    render_only = "--render-only" in argv
+    argv = [a for a in argv if not a.startswith("--")]
+    syms = [] if render_only else (argv or universe())
 
     # previous index: keep entries we don't refresh (or that fail) this run
     idx_path = os.path.join(DATA, "index.json")
-    old = {}
+    old, built_at = {}, None
     if os.path.exists(idx_path):
         with open(idx_path, encoding="utf-8") as f:
-            old = {it["symbol"]: it for it in json.load(f).get("items", [])}
+            prev = json.load(f)
+        old, built_at = {it["symbol"]: it for it in prev.get("items", [])}, prev.get("builtAt")
     keep_syms = set(universe())
     items = {s: it for s, it in old.items() if s in keep_syms or s in syms}
 
@@ -106,9 +115,15 @@ def main(argv: list[str]) -> int:
         if fn not in live:
             os.remove(os.path.join(DATA, fn))
 
+    for it in items.values():
+        it.pop("aka", None)
+        if it["symbol"] in AKA:
+            it["aka"] = AKA[it["symbol"]]
     ist = dt.datetime.now(dt.timezone(dt.timedelta(hours=5, minutes=30)))
+    if not (render_only and built_at):  # the page shows this as "refreshed ..." - only move it when data moved
+        built_at = ist.strftime("%d %b %Y, %H:%M IST")
     with open(idx_path, "w", encoding="utf-8") as f:
-        json.dump({"builtAt": ist.strftime("%d %b %Y, %H:%M IST"),
+        json.dump({"builtAt": built_at,
                    "items": sorted(items.values(), key=lambda x: x["symbol"])},
                   f, ensure_ascii=False, separators=(",", ":"))
 

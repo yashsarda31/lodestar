@@ -163,24 +163,72 @@ def pillar(key, name, metrics, blurb):
 
 
 # ───────────────────────────── data pull ─────────────────────────────
+# Old NSE symbols and everyday names people still type. Yahoo's search returns nothing for most of
+# these ("Zomato" -> no quotes at all), so they are mapped by hand. Keys are upper-case and matched whole
+# (so the name "tata motors" still goes to search and finds today's Tata Motors Limited).
+ALIASES = {
+    "ZOMATO": "ETERNAL.NS",
+    "TATAMOTORS": "TMPV.NS",
+    "MCDOWELL-N": "UNITDSPR.NS",
+    "ADANITRANS": "ADANIENSOL.NS",
+    "SRTRANSFIN": "SHRIRAMFIN.NS",
+    "CADILAHC": "ZYDUSLIFE.NS",
+    "MOTHERSUMI": "MOTHERSON.NS",
+    "LTIM": "LTM.NS", "LTI": "LTM.NS", "MINDTREE": "LTM.NS", "LTIMINDTREE": "LTM.NS",
+    "HDFC": "HDFCBANK.NS",
+    "SBI": "SBIN.NS",
+    "HUL": "HINDUNILVR.NS",
+    "RIL": "RELIANCE.NS",
+    "L&T": "LT.NS",
+    "GOOGLE": "GOOGL",
+    "FACEBOOK": "META",
+}
+_SUFFIX = {"NS": ".NS", "NSE": ".NS", "BO": ".BO", "BSE": ".BO"}
+
+
+def clean_query(query) -> str:
+    """Collapse whitespace and drop the wrapping quotes / '$' that come along with a pasted ticker."""
+    return " ".join((query or "").split()).strip(" \"'“”‘’`$,;")
+
+
+def split_query(query):
+    """'tcs.ns' -> ('TCS', '.NS');  'NSE:M_M' -> ('M&M', '.NS');  'NASDAQ:AAPL' -> ('AAPL', None);
+    'AAPL' -> ('AAPL', '').  Suffix '' means no exchange was given; None means a non-Indian one was."""
+    up = clean_query(query).upper()
+    suffix = ""
+    if ":" in up:
+        ex, up = (p.strip() for p in up.split(":", 1))
+        if ex == "NSE":
+            up = up.replace("_", "&")
+        suffix = _SUFFIX.get(ex)
+    head, dot, tail = up.rpartition(".")
+    if dot and head and tail in _SUFFIX:
+        up, suffix = head.strip(), _SUFFIX[tail]
+    return up, suffix
+
+
 def resolve_symbol(query: str):
-    """'RELIANCE' -> RELIANCE.NS (NSE first, then as typed, then BSE); 'NSE:TCS'; 'AAPL'; free text via search."""
-    q = (query or "").strip()
+    """'RELIANCE' -> RELIANCE.NS (NSE first, then as typed, then BSE); 'tcs.ns', 'NSE:TCS', 'AAPL';
+    old names via ALIASES ('Zomato' -> ETERNAL.NS); anything else via Yahoo's search."""
+    q = clean_query(query)
     if not q:
         raise AnalysisError("Type a ticker to analyse.")
-    up = q.upper()
+    base, suffix = split_query(q)
     cands = []
-    if ":" in up:
-        ex, s = up.split(":", 1)
-        s = s.strip().replace("_", "&") if ex.strip() == "NSE" and "_" in s else s.strip()
-        cands = [s + {"NSE": ".NS", "BSE": ".BO"}.get(ex.strip(), "")]
-    elif " " in up:
-        cands = []
-    elif "." in up:
-        cands = [up]
+    alias = ALIASES.get(base)
+    if alias:
+        cands.append(alias)
+    if suffix:  # an Indian exchange was named: honour it, then try the other one
+        cands += [base + suffix, base + (".BO" if suffix == ".NS" else ".NS")]
+    elif suffix is None:  # NASDAQ:AAPL and the like
+        cands.append(base)
+    elif " " in base:
+        pass  # free text - straight to search
+    elif "." in base:  # 7203.T, or BRK.B which Yahoo spells BRK-B
+        cands += [base, base.replace(".", "-")]
     else:
-        cands = [up + ".NS", up, up + ".BO"]
-    for c in cands:
+        cands += [base + ".NS", base, base + ".BO"]
+    for c in dict.fromkeys(cands):
         info = _info(c)
         if info:
             return c, info
@@ -204,16 +252,23 @@ def _info(sym):
 
 def search(q, limit=7):
     out, seen = [], set()
+    term, _ = split_query(q)  # "tcs.ns" -> "TCS": Yahoo's search finds nothing for the suffixed form
+    if len(term) >= 3:  # old names first: Yahoo has nothing for them
+        for old, new in ALIASES.items():
+            if old.startswith(term) and new not in seen:
+                seen.add(new)
+                out.append({"symbol": new, "name": f"Formerly / also known as {old}",
+                            "exchange": "NSE" if new.endswith(".NS") else ""})
     try:
-        quotes = yf.Search(q, max_results=12, news_count=0).quotes
+        quotes = yf.Search(term or q, max_results=12, news_count=0).quotes
     except Exception:
-        return out
+        return out[:limit]
     for x in quotes:
         if x.get("quoteType") != "EQUITY" or not x.get("symbol"):
             continue
         sym = x["symbol"]
         base = sym.split(".")[0]
-        if sym.endswith(".BO") and base + ".NS" in seen:
+        if sym in seen or (sym.endswith(".BO") and base + ".NS" in seen):
             continue
         if "-" in base and sym.endswith((".NS", ".BO")):  # NSE series suffixes (-BL, -BE ...)
             continue
